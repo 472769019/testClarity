@@ -28,7 +28,8 @@ for name in sorted(os.listdir(directory)):
         f"人脸 {report.score_face_size:5.2f}/10"
     )
     print(
-        f"  lap={report.laplacian:.1f}  ten={report.tenengrad:.1f}  "
+        f"  lap={report.laplacian:.1f}  edge={report.edge_sharpness:.1f}  "
+        f"ten={report.tenengrad:.1f}  "
         f"blk={report.block_artifact:.3f}(>={checker.block_artifact_thr})  "
         f"亮度={report.brightness:.1f}  对比度={report.contrast:.1f}"
     )

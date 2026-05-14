@@ -52,6 +52,20 @@ def fft_high_freq_ratio(gray: np.ndarray, cutoff_ratio: float = 0.15) -> float:
     return float(high / total)
 
 
+def edge_sharpness(gray: np.ndarray) -> float:
+    """边缘处梯度强度：只在 Canny 检测到的边缘像素上计算梯度均值。
+    与 Laplacian 方差互补：Laplacian 对整体纹理密度敏感，本指标只关心
+    边缘是否锐利，不受大面积光滑皮肤干扰。
+    边缘数量过少（<50px）直接返回 0，避免孤立噪声点拉高均值。"""
+    edges = cv2.Canny(gray, 30, 100)
+    if int(edges.sum()) // 255 < 50:
+        return 0.0
+    gx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+    gy = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+    grad_mag = np.sqrt(gx ** 2 + gy ** 2)
+    return float(grad_mag[edges > 0].mean())
+
+
 # ============================================================
 # 2. 辅助指标
 # ============================================================
@@ -209,6 +223,7 @@ class QualityReport:
     underexposure: float
     face_size: int                # 人脸短边像素
     eyes_detected: int
+    edge_sharpness: float         # 边缘像素处的梯度均值，越大越清晰
     block_artifact: float         # 块状伪影自相关系数，0=无伪影，越大越严重
 
     # 综合分数 [0, 100]，越高越好
@@ -235,6 +250,10 @@ class FaceQualityChecker:
         # laplacian_thr=15：经验值，光滑皮肤年轻人/AI人脸的清晰证件照 lap 约 18-80，
         # 真正模糊的图像通常 lap < 12
         laplacian_thr: float = 15.0,
+        # 边缘处梯度强度阈值，与 laplacian_thr 并联（两者同时低才判模糊）
+        # 高斯模糊 sigma=5 时 edge≈99，sigma=8 时 edge≈75
+        # 阈值 65：只有重度模糊才会同时触发 lap 和 edge 双重判据
+        edge_sharpness_thr: float = 65.0,
         tenengrad_thr: float = 300.0,
         # 亮度阈值
         bright_min: float = 50.0,
@@ -253,6 +272,7 @@ class FaceQualityChecker:
         block_artifact_thr: float = 0.60,
     ):
         self.laplacian_thr = laplacian_thr
+        self.edge_sharpness_thr = edge_sharpness_thr
         self.tenengrad_thr = tenengrad_thr
         self.bright_min = bright_min
         self.bright_max = bright_max
@@ -322,7 +342,8 @@ class FaceQualityChecker:
                 laplacian=0, tenengrad=0, brenner=0, fft_ratio=0,
                 brightness=float(gray_full.mean()), contrast=float(gray_full.std()),
                 overexposure=0, underexposure=0,
-                face_size=0, eyes_detected=0, block_artifact=0.0, overall_score=0,
+                face_size=0, eyes_detected=0,
+                edge_sharpness=0.0, block_artifact=0.0, overall_score=0,
                 score_sharpness=0, score_naturalness=0, score_brightness=0,
                 score_contrast=0, score_exposure=0, score_face_size=0,
             )
@@ -343,13 +364,19 @@ class FaceQualityChecker:
         under = underexposure_ratio(face_gray)
         eyes = self.detector.detect_eyes(face_gray)
         block = block_artifact_ratio(face_gray)
+        edge_sharp = edge_sharpness(face_gray)
 
         # 3. 综合判定
         reasons = []
         if face_size < self.min_face_size:
             reasons.append(f"人脸太小({face_size}px<{self.min_face_size})")
-        if lap < self.laplacian_thr:
-            reasons.append(f"图像模糊(lap={lap:.1f}<{self.laplacian_thr})")
+        # 模糊判断：Laplacian 为主判据
+        # 若 lap 低但 edge_sharp 高（光滑皮肤/AI人脸），则豁免，不判模糊
+        # 只有 lap 低 且 edge_sharp 也低，才真正判为模糊
+        if lap < self.laplacian_thr and edge_sharp < self.edge_sharpness_thr:
+            reasons.append(
+                f"图像模糊(lap={lap:.1f}<{self.laplacian_thr}, edge={edge_sharp:.1f}<{self.edge_sharpness_thr})"
+            )
         if bright < self.bright_min:
             reasons.append(f"过暗(亮度={bright:.1f})")
         elif bright > self.bright_max:
@@ -379,6 +406,7 @@ class FaceQualityChecker:
             brightness=round(bright, 2), contrast=round(contrast, 2),
             overexposure=round(over, 4), underexposure=round(under, 4),
             face_size=face_size, eyes_detected=eyes,
+            edge_sharpness=round(edge_sharp, 2),
             block_artifact=round(block, 4),
             overall_score=overall,
             score_sharpness=sc_sharp, score_naturalness=sc_natural,
