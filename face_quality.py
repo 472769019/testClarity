@@ -214,6 +214,14 @@ class QualityReport:
     # 综合分数 [0, 100]，越高越好
     overall_score: float
 
+    # 各项得分（满分见括号）
+    score_sharpness: float    # 清晰度  满分 40
+    score_naturalness: float  # 自然度  满分 20
+    score_brightness: float   # 亮度    满分 10
+    score_contrast: float     # 对比度  满分 10
+    score_exposure: float     # 曝光    满分 10
+    score_face_size: float    # 人脸大小 满分 10
+
     def to_dict(self):
         return asdict(self)
 
@@ -241,8 +249,8 @@ class FaceQualityChecker:
         # 是否要求检测到眼睛
         require_eyes: bool = False,
         # 块状伪影阈值（8px边界/内部梯度比的超出量）
-        # 自然图像通常 <0.20，明显JPEG/像素化伪影通常 >0.35
-        block_artifact_thr: float = 0.35,
+        # 自然图像/PNG通常 <0.10；JPEG压缩肖像照通常 0.30-0.55；明显像素化通常 >0.65
+        block_artifact_thr: float = 0.60,
     ):
         self.laplacian_thr = laplacian_thr
         self.tenengrad_thr = tenengrad_thr
@@ -257,17 +265,17 @@ class FaceQualityChecker:
 
         self.detector = FaceDetector()
 
-    def _compute_overall(self, lap, ten, bright, contrast, over, under, face_size, block_artifact) -> float:
-        """加权综合分：清晰度40% + 自然度20% + 亮度10% + 对比度10% + 曝光10% + 人脸大小10%"""
-        # 清晰度（40%）
-        # 饱和点设为 laplacian_thr * 4，保证清晰图像接近满分
+    def _compute_overall(self, lap, ten, bright, contrast, over, under, face_size, block_artifact):
+        """加权综合分：清晰度40% + 自然度20% + 亮度10% + 对比度10% + 曝光10% + 人脸大小10%
+        返回 (overall, sharpness, naturalness, brightness, contrast, exposure, face_size_score)
+        """
+        # 清晰度（40%）：饱和点设为 thr * 4，保证清晰图像接近满分
         s_lap = min(lap / (self.laplacian_thr * 4), 1.0)
         s_ten = min(ten / (self.tenengrad_thr * 4), 1.0)
         s_sharp = (s_lap + s_ten) / 2
 
         # 自然度（20%）：JPEG块状伪影越少越好
-        # 新指标从0开始（0=无伪影），超过_good开始线性扣分，达到_bad时归零
-        _good = 0.10   # 低于此值视为正常，不扣分
+        _good = 0.20   # 低于此值视为正常，不扣分
         _bad = self.block_artifact_thr
         s_natural = max(0.0, 1.0 - (block_artifact - _good) / max(_bad - _good, 0.01))
         s_natural = min(1.0, s_natural)
@@ -285,15 +293,15 @@ class FaceQualityChecker:
         # 人脸大小（10%）
         s_size = min(face_size / (self.min_face_size * 3), 1.0)
 
-        score = (
-            s_sharp * 40
-            + s_natural * 20
-            + s_bright * 10
-            + s_contrast * 10
-            + s_expo * 10
-            + s_size * 10
-        )
-        return round(score, 2)
+        sc_sharp    = round(s_sharp   * 40, 2)
+        sc_natural  = round(s_natural * 20, 2)
+        sc_bright   = round(s_bright  * 10, 2)
+        sc_contrast = round(s_contrast* 10, 2)
+        sc_expo     = round(s_expo    * 10, 2)
+        sc_size     = round(s_size    * 10, 2)
+        overall     = round(sc_sharp + sc_natural + sc_bright + sc_contrast + sc_expo + sc_size, 2)
+
+        return overall, sc_sharp, sc_natural, sc_bright, sc_contrast, sc_expo, sc_size
 
     def check(self, image: np.ndarray) -> QualityReport:
         """
@@ -315,6 +323,8 @@ class FaceQualityChecker:
                 brightness=float(gray_full.mean()), contrast=float(gray_full.std()),
                 overexposure=0, underexposure=0,
                 face_size=0, eyes_detected=0, block_artifact=0.0, overall_score=0,
+                score_sharpness=0, score_naturalness=0, score_brightness=0,
+                score_contrast=0, score_exposure=0, score_face_size=0,
             )
 
         # 取最大人脸
@@ -358,7 +368,8 @@ class FaceQualityChecker:
         usable = len(reasons) == 0
         reason = "通过" if usable else "; ".join(reasons)
 
-        overall = self._compute_overall(lap, ten, bright, contrast, over, under, face_size, block)
+        overall, sc_sharp, sc_natural, sc_bright, sc_contrast, sc_expo, sc_size = \
+            self._compute_overall(lap, ten, bright, contrast, over, under, face_size, block)
 
         return QualityReport(
             usable=usable, reason=reason,
@@ -370,6 +381,9 @@ class FaceQualityChecker:
             face_size=face_size, eyes_detected=eyes,
             block_artifact=round(block, 4),
             overall_score=overall,
+            score_sharpness=sc_sharp, score_naturalness=sc_natural,
+            score_brightness=sc_bright, score_contrast=sc_contrast,
+            score_exposure=sc_expo, score_face_size=sc_size,
         )
 
     def check_file(self, path: str) -> QualityReport:
