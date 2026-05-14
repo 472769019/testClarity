@@ -250,7 +250,11 @@ class FaceQualityChecker:
         # laplacian_thr=15：经验值，光滑皮肤年轻人/AI人脸的清晰证件照 lap 约 18-80，
         # 真正模糊的图像通常 lap < 12
         laplacian_thr: float = 15.0,
+        # lap 绝对下限：低于此值直接判模糊，不触发 edge 豁免。
+        # 清晰的光滑皮肤人脸 lap 最低约 18，真正模糊的图像通常 lap < 5。
+        laplacian_absolute_thr: float = 6.0,
         # 边缘处梯度强度阈值，与 laplacian_thr 并联（两者同时低才判模糊）
+        # 仅在 lap 处于 [laplacian_absolute_thr, laplacian_thr) 区间时生效
         # 高斯模糊 sigma=5 时 edge≈99，sigma=8 时 edge≈75
         # 阈值 65：只有重度模糊才会同时触发 lap 和 edge 双重判据
         edge_sharpness_thr: float = 65.0,
@@ -272,6 +276,7 @@ class FaceQualityChecker:
         block_artifact_thr: float = 0.60,
     ):
         self.laplacian_thr = laplacian_thr
+        self.laplacian_absolute_thr = laplacian_absolute_thr
         self.edge_sharpness_thr = edge_sharpness_thr
         self.tenengrad_thr = tenengrad_thr
         self.bright_min = bright_min
@@ -370,13 +375,20 @@ class FaceQualityChecker:
         reasons = []
         if face_size < self.min_face_size:
             reasons.append(f"人脸太小({face_size}px<{self.min_face_size})")
-        # 模糊判断：Laplacian 为主判据
-        # 若 lap 低但 edge_sharp 高（光滑皮肤/AI人脸），则豁免，不判模糊
-        # 只有 lap 低 且 edge_sharp 也低，才真正判为模糊
-        if lap < self.laplacian_thr and edge_sharp < self.edge_sharpness_thr:
-            reasons.append(
-                f"图像模糊(lap={lap:.1f}<{self.laplacian_thr}, edge={edge_sharp:.1f}<{self.edge_sharpness_thr})"
-            )
+        # 模糊判断：
+        # lap < absolute_thr（极低）→ 直接判模糊，edge 豁免无效
+        # lap < laplacian_thr 且 edge_sharp 也低 → 模糊（AND 门）
+        # lap < laplacian_thr 但 edge_sharp 高 → 豁免（光滑皮肤/AI人脸）
+        _is_blurry = (lap < self.laplacian_absolute_thr) or (
+            lap < self.laplacian_thr and edge_sharp < self.edge_sharpness_thr
+        )
+        if _is_blurry:
+            if lap < self.laplacian_absolute_thr:
+                reasons.append(f"图像模糊(lap={lap:.1f}<{self.laplacian_absolute_thr})")
+            else:
+                reasons.append(
+                    f"图像模糊(lap={lap:.1f}<{self.laplacian_thr}, edge={edge_sharp:.1f}<{self.edge_sharpness_thr})"
+                )
         if bright < self.bright_min:
             reasons.append(f"过暗(亮度={bright:.1f})")
         elif bright > self.bright_max:
