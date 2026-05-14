@@ -1,7 +1,8 @@
 {
   "permissions": {
     "allow": [
-      "Bash(python main.py)"
+      "Bash(python main.py)",
+      "PowerShell(python -c \"import cv2; print\\(cv2.__version__\\)\" 2>&1; python -c \"import numpy; print\\(numpy.__version__\\)\" 2>&1)"
     ]
   }
 }
